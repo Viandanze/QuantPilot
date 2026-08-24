@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-suite:
+    name: Build and run the full test suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools
+          python -m pip install -r requirements.txt pybind11
+
+      - name: Configure CMake (Release build of the C++17 matching core)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+                -Dpybind11_DIR="$(python -m pybind11 --cmakedir)"
+
+      - name: Build the matching core, native tests and Python bindings
+        run: cmake --build build --parallel
+
+      - name: Run the native order book tests (130 checks)
+        run: ./build/qp_orderbook_test
+
+      - name: Verify the qp_matching Python extension was built
+        run: python -c "import qp_matching; print('qp_matching import OK')"
+
+      - name: Run the Python test suite (82 tests)
+        run: pytest tests/ -q
