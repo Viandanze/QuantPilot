@@ -4,9 +4,11 @@ import pytest
 
 from backtest.costs import CostModel
 from engine.datafeed import DataFeed
-from engine.events import OPEN, FillEvent, MarketEvent, OrderEvent
+from engine.events import CLOSE, OPEN, FillEvent, MarketEvent, OrderEvent
 from engine.execution import SimulatedExecutionHandler
 from engine.portfolio import Portfolio
+
+from conftest import make_panel
 
 
 def mk_event(date, phase, prices):
