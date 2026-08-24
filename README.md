@@ -20,6 +20,11 @@ framework should be comfortable showing.
 - **Event-driven engine**: DataFeed, Strategy, RiskManager, Portfolio and
   ExecutionHandler cooperate over one FIFO event queue; a per-fill ledger audit
   aborts the run the moment money goes missing
+- **C++17 matching core** (`qp_matching`): a deterministic two-sided limit
+  order book - price-time priority, GFD limit orders, cancels, self-trade
+  prevention - exposed to Python via pybind11 with the GIL released during
+  matching; a pure Python reference book and an equivalence test suite pin
+  its behaviour fill-for-fill
 - **Realistic cost model**: commission 0.025% per side (5 CNY minimum), stamp tax
   0.1% on sells, 0.1% adverse slippage on both sides - always on
 - **T+1 settlement** and 100-share board lots, decided-on-close / filled-at-next-open
@@ -54,6 +59,12 @@ python signal.py --symbols 600519,510300 --date 2026-08-21
 
 # tests
 pytest
+
+# build the optional C++17 matching core (see "Matching engine")
+pip install pybind11
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+      -Dpybind11_DIR="$(python -m pybind11 --cmakedir)"
+cmake --build build
 ```
 
 Reports land in `reports_output/backtest_<strategy>.html`. Cached market data lands
@@ -69,10 +80,14 @@ engine/      event-driven core: typed events, FIFO queue, data feed, portfolio,
 backtest/    cost model + compatibility facade over the engine core
 risk/        position cap, stop loss, drawdown cooldown
 report/      metrics + self-contained HTML rendering (incl. integrity section)
+cpp/         C++17 matching core: limit order book, native tests, pybind11
+             bindings, native micro-benchmark
+benchmarks/  pure Python reference order book + throughput benchmark
 signal.py    CLI: per-strategy daily signals
 backtest.py  CLI: run backtests, write reports
-tests/       pytest suite (68 tests: costs, signals, engine constraints, risk rules,
-             event core, V1/V2 equivalence, look-ahead defences, reconciliation)
+tests/       pytest suite (82 tests: costs, signals, engine constraints, risk rules,
+             event core, V1/V2 equivalence, look-ahead defences, reconciliation,
+             matching bindings + C++/Python equivalence)
 ```
 
 ## Architecture
@@ -220,6 +235,137 @@ first-trade anchors, ledger integrity and determinism for all three bundled
 strategies. On the capture platform the two engines agree bit-for-bit; any
 residual difference on other platforms is ulp-level floating-point noise.
 
+## Matching engine
+
+Since v0.3.0 QuantPilot also ships a C++17 limit order book under `cpp/`,
+exposed to Python as the `qp_matching` extension module (pybind11). It is a
+standalone, deterministic, single-threaded matching core - the same honesty
+rules as the backtester apply: no hidden concurrency, no floating point in
+the matching path, and behaviour pinned by tests rather than by claims.
+
+### Semantics
+
+- Two-sided limit order book, **price-time priority**: each price level is a
+  FIFO queue; takers consume liquidity best-price-first, oldest-first.
+- Good-for-day **limit orders** and **cancels**; a submitted order returns
+  its fills (as `Fill` records) plus its resting remainder in one call.
+- **Self-trade prevention** (cancel-resting): an incoming order never trades
+  against a resting order of the same `trader_id`; the older resting order is
+  cancelled and matching continues with the next maker. Cancelled ids are
+  reported in `SubmitResult.self_trade_cancels`.
+- **Prices and quantities are 64-bit integers** (ticks and lots). No floats
+  anywhere in the matching path, so replaying one order stream always yields
+  bit-identical fill sequences.
+- Invalid input (non-positive price/quantity, duplicate order id) raises
+  `ValueError`; re-entrant submits from a fill callback raise `RuntimeError`
+  instead of corrupting the book.
+
+### Architecture and complexity
+
+```
+LimitOrderBook
+  bids_: map<price, Level, greater>     // best bid = first level
+  asks_: map<price, Level, less>        // best ask = first level
+  Level { list<Order> fifo; int64 total_qty; }
+  index_: unordered_map<order_id -> (side, price, list::iterator)>
+```
+
+- `submit` is **O(log P)** per price level touched (P = live price levels)
+  plus **O(1)** per fill; resting a remainder is one map lookup + list push.
+- `cancel` is **O(log P)**: hash lookup, list erase via stored iterator,
+  level removal when it empties.
+- The order index stores list iterators, which stay valid until the order is
+  erased; a level is only removed once its queue is empty, so iterators can
+  never dangle.
+- One deliberate invariant: after every public operation the book is never
+  crossed (best ask is strictly above best bid); the native tests assert it
+  after every scenario.
+
+### Using it from Python
+
+```python
+import qp_matching as qpm
+
+book = qpm.LimitOrderBook()
+result = book.submit(qpm.Side.BUY, 100_050, 200, trader_id=1)  # price in ticks
+result.fills            # [Fill(...), ...] in execution order
+result.rested           # True if any quantity is resting
+result.resting_quantity # remaining size at rest
+book.cancel(result.order_id)
+book.best_bid(), book.best_ask(), book.spread()
+book.bid_depth(5), book.ask_depth(5)      # [(price, qty), ...] best first
+book.on_fill(callback)                    # optional per-fill callback
+```
+
+While no fill callback is registered, `submit`/`cancel` **release the GIL**
+for the entire matching computation (a pytest test proves a busy Python
+thread keeps running during a single long C++ sweep). With a callback
+registered the GIL is held, and re-entrant orders from the callback are
+rejected.
+
+### Build
+
+The C++ core needs a C++17 compiler, CMake >= 3.15 and (for the Python
+module only) pybind11:
+
+```bash
+pip install pybind11
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+      -Dpybind11_DIR="$(python -m pybind11 --cmakedir)"
+cmake --build build          # drops qp_matching*.so into the repo root (gitignored)
+./build/qp_orderbook_test    # 130 native checks
+./build/qp_orderbook_bench   # core-only micro-benchmark
+python benchmarks/bench_matching.py
+```
+
+Without pybind11 the native test and benchmark binaries still build; CMake
+prints a warning and skips only the Python module. `pytest` skips the
+matching tests with a pointer here if the module has not been built.
+
+### Measured throughput (single core)
+
+Same op mix everywhere: ~70% resting limit orders (exponential offset from
+the mid, mean 50 ticks), ~15% marketable orders (crossing 0-5 ticks), ~15%
+cancels; quantities 1-100; 64 trader ids; roughly one in five ops produces
+fills. One warmup round, then five timed rounds, medians reported. Platform:
+one core of an Intel Xeon Platinum 8457C, g++ 11.4 (`-O3`), Python 3.13.15,
+Linux.
+
+| Implementation | orders/sec | fills/sec | note |
+| --- | ---: | ---: | --- |
+| C++17 core, native (`qp_orderbook_bench`, 5 x 200k ops) | ~6.6M | ~1.2M | no Python in the loop |
+| C++17 core via `qp_matching` (5 x 100k ops, identical stream) | ~920k | ~172k | per-call binding + result conversion dominates |
+| Pure Python reference book (same stream) | ~380k | ~72k | `benchmarks/py_limit_book.py` |
+
+The honest reading: driven order-by-order from Python, the pybind11 module is
+**~2.4x faster** than the pure Python book - per-call argument parsing and
+building the returned `SubmitResult` dominate, not matching. The core itself
+sustains **~6.6M orders/sec** (~17x the Python reference under the same
+workload). Both numbers are reproducible with the commands above; they are
+median-of-5 measurements on one shared CPU core, not peak marketing figures.
+
+### Design tradeoffs
+
+- **Determinism over parallelism.** No atomics, locks or thread pools: the
+  core is single-threaded by design, which is what makes fill-by-fill
+  equivalence testing (and future replay/audit tooling) meaningful. Throughput
+  comes from data structures, not concurrency.
+- **Scaled integers over doubles.** Matching engines should not round; ticks
+  also keep the C++ and Python books bit-identical. The backtester's
+  double-based accounting stays in Python, where the reference numbers live.
+- **`std::map` levels over a flat array book.** Node-based maps cost cache
+  misses but support unbounded price ranges and still hit millions of ops/sec;
+  a flat price-indexed book would be faster but cap the price range.
+- **Standalone over integrated.** The backtest engine still fills at next
+  open through its own execution handler - the v1/v2 equivalence tests stay
+  untouched. Wiring the real order book into the daily loop is deliberately
+  left as an optional, separately-tested step; nothing in the 82-test suite
+  depends on the extension module being built.
+- **Cancel-resting STP** is the simplest deterministic self-trade policy:
+  the resting (older) order dies, matching continues. Real venues offer
+  cancel-newest/cancel-both/decrement variants; adding them is a policy
+  parameter, not a redesign.
+
 ## Strategies
 
 | Name | Rule | Default parameters |
@@ -278,13 +424,17 @@ beat, and precisely why the frictions are not optional here.
 
 ## Testing
 
-`pytest` runs 68 tests, all offline: the cost model, strategy signal logic,
+`pytest` runs 82 tests, all offline: the cost model, strategy signal logic,
 engine constraints (next-open fills, T+1 locks, caps, stop loss, drawdown
 cooldown), the sample-data generator, the event vocabulary and queue, the
 event-driven core (data feed, portfolio, execution handler), V1/V2 equivalence
 against frozen references, look-ahead defences (prefix invariance,
-future-spike probe, wire audits) and money conservation (hand-computed
-identities, tamper detection).
+future-spike probe, wire audits), money conservation (hand-computed
+identities, tamper detection) and the matching bindings (semantics, fills
+callback, GIL release, fill-for-fill equivalence with the pure Python
+reference book). The matching tests skip cleanly when `qp_matching` has not
+been built; the C++ core additionally carries 130 native checks in
+`cpp/order_book_test.cpp` (run via `./build/qp_orderbook_test`).
 
 ## Disclaimer
 
