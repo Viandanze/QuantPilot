@@ -12,7 +12,7 @@ import pathlib
 
 import pandas as pd
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 
 # --------------------------------------------------------------------- format
@@ -166,6 +166,10 @@ details{margin-top:8px} summary{cursor:pointer;font-size:14px;color:#334155}
 .foot{margin-top:40px;font-size:12px;color:#64748b;border-top:1px solid #e2e8f0;padding-top:14px;line-height:1.6}
 .tick{font-size:11px;fill:#64748b;font-family:inherit}
 .note{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:13px;color:#713f12;margin-top:10px}
+.badge{display:inline-block;padding:1px 10px;border-radius:999px;font-size:12px;font-weight:650;letter-spacing:.03em}
+.badge.pass{background:#dcfce7;color:#15803d}
+.badge.fail{background:#fee2e2;color:#b91c1c}
+.integrity ul{font-size:13.5px;color:#334155;line-height:1.7;margin:6px 0;padding-left:20px}
 """
 
 
@@ -251,6 +255,114 @@ def _symbol_table(result) -> str:
     return f"<table><thead>{head}</thead><tbody>{''.join(rows)}</tbody></table>"
 
 
+# ------------------------------------------------------------------ integrity
+def _badge(ok) -> str:
+    if ok is None:
+        return "<span class='badge'>N/A</span>"
+    cls = "pass" if ok else "fail"
+    label = "PASS" if ok else "FAIL"
+    return f"<span class='badge {cls}'>{label}</span>"
+
+
+def _integrity_section(result, split_metrics) -> str:
+    """Backtest Integrity: temporal lock, ledger reconciliation, lineage."""
+    integ = getattr(result, "integrity", None) or {}
+    if not integ:
+        return ""
+    checks = integ.get("checks", {})
+    rec = integ.get("reconciliation", {})
+    tol = integ.get("audit_tolerance", 0.0)
+    drift = integ.get("max_ledger_drift", 0.0)
+
+    check_rows = [
+        ("Per-fill ledger conservation",
+         "cash + inventory at price-only basis + fees paid == capital + realized gross, "
+         "re-audited after every single fill",
+         checks.get("per_fill_ledger")),
+        ("Cash-flow identity",
+         "final cash == capital + sell turnover - buy turnover - total costs",
+         checks.get("cash_flow_identity")),
+        ("Equity marking identity",
+         "final equity == final cash + market value marked at the last close",
+         checks.get("equity_mark_identity")),
+        ("PnL decomposition (net)",
+         "total PnL == realized net + unrealized net",
+         checks.get("pnl_net_decomposition")),
+        ("PnL decomposition (gross)",
+         "total PnL == realized gross + unrealized gross - total costs",
+         checks.get("pnl_gross_decomposition")),
+    ]
+    checks_html = "<table><thead><tr><th>Check</th><th style='text-align:left'>Identity</th><th>Result</th></tr></thead><tbody>" + "".join(
+        f"<tr><td style='width:220px'>{name}</td>"
+        f"<td style='text-align:left;color:#475569'>{desc}</td><td>{_badge(ok)}</td></tr>"
+        for name, desc, ok in check_rows
+    ) + "</tbody></table>"
+
+    money_rows = [
+        ("Initial capital", rec.get("initial_capital")),
+        ("Final equity (cash + market value)", rec.get("final_equity")),
+        ("Final cash", rec.get("final_cash")),
+        ("Final market value", rec.get("final_market_value")),
+        ("Total PnL", rec.get("total_pnl")),
+        ("Realized PnL (net)", rec.get("realized_pnl_net")),
+        ("Unrealized PnL (net)", rec.get("unrealized_pnl_net")),
+        ("Total costs (commission + stamp)", rec.get("total_costs")),
+    ]
+    money_html = "<table><tbody>" + "".join(
+        f"<tr><td style='width:220px'>{name}</td><td>{fmt_money(v)} CNY</td></tr>"
+        for name, v in money_rows
+    ) + "</tbody></table>"
+
+    if split_metrics:
+        oos_note = (
+            "The in-sample / out-of-sample split above re-runs the engine independently on "
+            "each slice with fresh capital; treat a large IS/OOS gap as an overfitting warning."
+        )
+    else:
+        oos_note = (
+            "IS/OOS validation is disabled for this run; enable it (backtest.py --split) "
+            "before trusting any parameter choice made on this window."
+        )
+
+    overall = integ.get("all_checks_passed")
+    return (
+        "<h2>Backtest integrity</h2>"
+        "<div class='integrity'>"
+        "<h3 style='margin:14px 0 4px'>No look-ahead by construction</h3>"
+        "<ul>"
+        "<li><b>Temporal lock.</b> Strategies decide on a session's close. Orders are born "
+        "only during close-phase processing and can only be consumed by the next session's "
+        "open phase, so a signal can never fill on the bar that produced it - the lock lives "
+        "in the engine, not in strategy discipline. Strategies never receive the queue, the "
+        "portfolio or the execution handler; their only output is a weight map.</li>"
+        "<li><b>As-of data feed.</b> Every market event is built exclusively from bars dated "
+        "at or before the session, so future prices are censored at the single door data "
+        "walks through.</li>"
+        "<li><b>Verified by tests, not by trust.</b> The suite replays the pipeline on "
+        "truncated data (prefix invariance), plants a known future spike and checks it "
+        "cannot be front-run, and audits the event wire itself: signals only in the close "
+        "phase, fills strictly after the orders that produced them, at that morning's open.</li>"
+        "</ul>"
+        "<h3 style='margin:14px 0 4px'>Ledger reconciliation "
+        f"{_badge(overall) if overall is not None else ''}</h3>"
+        f"{checks_html}"
+        f"<p class='sub'>{integ.get('fills_audited', 0)} fills audited; worst observed drift "
+        f"{drift:.3e} CNY against a tolerance of {tol:.3e} CNY. A drift beyond tolerance "
+        "aborts the backtest instead of publishing broken numbers.</p>"
+        f"{money_html}"
+        "<p class='sub'>Every yuan is either in cash, in inventory at price-only basis, or "
+        "paid away as costs; realized gross gains are the only other source. The identities "
+        "above must hold after every fill and at the close of the run.</p>"
+        "<h3 style='margin:14px 0 4px'>Engine lineage and validation discipline</h3>"
+        "<p class='sub'>This run was produced by the event-driven engine (v2), which "
+        "reproduces the retired daily-loop engine's arithmetic operation-for-operation: "
+        "frozen-reference tests pin identical trade lists, fees and equity curves, so any "
+        "residual difference would be ulp-level floating-point noise only.</p>"
+        f"<p class='sub'>{html.escape(oos_note)}</p>"
+        "</div>"
+    )
+
+
 def render_report(
     result,
     metrics: dict,
@@ -329,6 +441,8 @@ def render_report(
                 "</div>"
             )
 
+    integrity_html = _integrity_section(result, split_metrics)
+
     doc = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -355,6 +469,7 @@ def render_report(
 <h2>Metrics</h2>
 {_metrics_table(metrics, bench=result.benchmark is not None)}
 {split_html}
+{integrity_html}
 
 <h2>Risk events</h2>
 <p class="sub">Stop-loss exits: {metrics['stop_loss_exits']} -
