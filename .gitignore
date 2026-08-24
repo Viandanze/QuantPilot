@@ -8,3 +8,9 @@ data/cache/
 reports_output/
 .env
 .DS_Store
+
+# C++ matching core build artifacts
+build/
+*.so
+*.o
+*.a
