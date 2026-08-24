@@ -5,6 +5,8 @@ from abc import ABC, abstractmethod
 
 import pandas as pd
 
+from engine.events import MarketEvent
+
 
 def asof_row(df: pd.DataFrame, date: pd.Timestamp) -> pd.Series:
     """Last row of ``df`` at or before ``date`` (empty series if none)."""
@@ -31,7 +33,10 @@ class Strategy(ABC):
 
     Implementations must only read data at or before the decision date; the
     engine executes resulting weight changes at the next session open, so any
-    look-ahead would silently corrupt the backtest.
+    look-ahead would silently corrupt the backtest. The bundled plugins
+    precompute causal indicators (rolling means, trailing returns) over the
+    panel once, then query them with as-of lookups at the decision date - a
+    rolling statistic at index ``t`` depends only on data at or before ``t``.
     """
 
     name: str = "base"
@@ -39,6 +44,20 @@ class Strategy(ABC):
     @abstractmethod
     def target_weights(self, date: pd.Timestamp, equity: float) -> dict[str, float]:
         """Return {symbol: target weight} for positions held from next open."""
+
+    def on_bar(self, event: MarketEvent, equity: float) -> dict[str, float]:
+        """Event-driven decision hook: return desired target weights.
+
+        The engine invokes this exactly once per session, at the close, with
+        an event whose prices are as-of the session date and nothing else:
+        strategies never see the queue, the portfolio or the execution
+        handler, so the close-decision / next-open-fill timeline cannot be
+        bypassed from strategy code. The default implementation adapts the
+        classic ``target_weights`` interface, which stays the decision core
+        of the bundled plugins; new strategies may override ``on_bar``
+        directly to consume the streamed events instead.
+        """
+        return self.target_weights(event.timestamp, equity)
 
     def note(self, date: pd.Timestamp, symbol: str) -> str:
         """Short human-readable state string for signal output (optional)."""

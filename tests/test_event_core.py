@@ -165,12 +165,12 @@ def test_execution_clamps_sells_to_t1_sellable():
                          CostModel().buy_fee(500 * px), 0.0))
     # same-session sell order (locked shares): nothing sellable, order drops
     handler.enqueue(OrderEvent(pd.Timestamp("2024-01-02"), "AAA", "SELL", 500))
-    fills = handler.execute_pending(mk_event("2024-01-02", OPEN, {"AAA": 100.0}))
+    fills = list(handler.execute_pending(mk_event("2024-01-02", OPEN, {"AAA": 100.0})))
     assert fills == []
 
     pf.rollover_t1()
     handler.enqueue(OrderEvent(pd.Timestamp("2024-01-03"), "AAA", "SELL", 500))
-    fills = handler.execute_pending(mk_event("2024-01-03", OPEN, {"AAA": 100.0}))
+    fills = list(handler.execute_pending(mk_event("2024-01-03", OPEN, {"AAA": 100.0})))
     assert len(fills) == 1 and fills[0].shares == 500
 
 
@@ -178,14 +178,14 @@ def test_execution_shrinks_buys_to_affordable_lots():
     pf = Portfolio(10_500.0, ["AAA"])
     handler = SimulatedExecutionHandler(pf, CostModel())
     handler.enqueue(OrderEvent(pd.Timestamp("2024-01-02"), "AAA", "BUY", 10_000))
-    fills = handler.execute_pending(mk_event("2024-01-02", OPEN, {"AAA": 100.0}))
+    fills = list(handler.execute_pending(mk_event("2024-01-02", OPEN, {"AAA": 100.0})))
     assert len(fills) == 1
     fill = fills[0]
     assert fill.shares == 100  # only one lot is affordable at ~100.1 CNY
     assert fill.turnover + fill.fee <= 10_500.0
     # cannot afford even one lot at this price
     handler.enqueue(OrderEvent(pd.Timestamp("2024-01-03"), "AAA", "BUY", 100))
-    assert handler.execute_pending(mk_event("2024-01-03", OPEN, {"AAA": 5_000.0})) == []
+    assert list(handler.execute_pending(mk_event("2024-01-03", OPEN, {"AAA": 5_000.0}))) == []
 
 
 def test_execution_forced_exit_cancels_same_morning_buy():
@@ -193,7 +193,7 @@ def test_execution_forced_exit_cancels_same_morning_buy():
     handler = SimulatedExecutionHandler(pf, CostModel())
     handler.enqueue(OrderEvent(pd.Timestamp("2024-01-02"), "AAA", "SELL", 100, "stop_loss"))
     handler.enqueue(OrderEvent(pd.Timestamp("2024-01-02"), "AAA", "BUY", 100))
-    fills = handler.execute_pending(mk_event("2024-01-02", OPEN, {"AAA": 100.0}))
+    fills = list(handler.execute_pending(mk_event("2024-01-02", OPEN, {"AAA": 100.0})))
     # no position to sell, and the buy was cancelled by the forced exit
     assert fills == []
     assert handler.pending == []
@@ -203,5 +203,5 @@ def test_execution_drops_orders_without_printable_open():
     pf = Portfolio(100_000.0, ["AAA"])
     handler = SimulatedExecutionHandler(pf, CostModel())
     handler.enqueue(OrderEvent(pd.Timestamp("2024-01-02"), "AAA", "BUY", 100))
-    fills = handler.execute_pending(mk_event("2024-01-02", OPEN, {"AAA": float("nan")}))
+    fills = list(handler.execute_pending(mk_event("2024-01-02", OPEN, {"AAA": float("nan")})))
     assert fills == [] and handler.pending == []

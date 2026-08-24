@@ -182,9 +182,9 @@ class Portfolio:
         pos = self.positions[fill.symbol]
         self.cash -= fill.turnover + fill.fee
         basis = pos.avg_cost * pos.shares + fill.turnover + fill.fee
+        gross_basis = pos.avg_cost_gross * pos.shares + fill.turnover
         pos.shares += fill.shares
         pos.avg_cost = basis / pos.shares
-        gross_basis = pos.avg_cost_gross * pos.shares + fill.turnover
         pos.avg_cost_gross = gross_basis / pos.shares
         pos.locked += fill.shares  # T+1: not sellable today
         if pos.entry_date is None:

@@ -6,6 +6,13 @@ half of the engine's temporal lock: an order can physically not fill on the
 bar that produced its signal, because the runner enqueues orders only after
 the open phase of that session has already been consumed.
 
+``execute_pending`` is a *generator*: it executes one order per resumption
+and yields the resulting fill. The runner routes each yielded fill through
+the event queue and lets the portfolio apply it before resuming the
+generator, so morning sequencing is preserved exactly - forced exits free
+cash before strategy sells, and sells free cash before buys size their
+affordability check.
+
 Execution rules, mirroring the original engine exactly:
 
 - priority at the open: forced risk exits first, then strategy sells, then
@@ -18,6 +25,8 @@ Execution rules, mirroring the original engine exactly:
 - orders that cannot print (no known open price) are dropped, not deferred
 """
 from __future__ import annotations
+
+from collections.abc import Iterator
 
 from engine.datafeed import DataFeed
 from engine.events import FillEvent, MarketEvent, OrderEvent
@@ -39,48 +48,44 @@ class SimulatedExecutionHandler:
         """Park an order for the next open-phase event."""
         self.pending.append(order)
 
-    def execute_pending(self, event: MarketEvent) -> list[FillEvent]:
-        """Attempt every pending order against this open event."""
+    def execute_pending(self, event: MarketEvent) -> Iterator[FillEvent]:
+        """Execute pending orders one per resumption, in priority order."""
         pending, self.pending = self.pending, []
         forced = [o for o in pending if o.reason in FORCED_REASONS]
         signal_sells = [o for o in pending if o.side == "SELL" and o.reason == "signal"]
         buys = [o for o in pending if o.side == "BUY"]
         forced_symbols = {o.symbol for o in forced}
 
-        fills: list[FillEvent] = []
         for order in forced:
-            fills.extend(self._sell(order, event))
+            yield from self._sell(order, event)
         for order in signal_sells:
-            fills.extend(self._sell(order, event))
+            yield from self._sell(order, event)
         for order in buys:
             if order.symbol in forced_symbols:
                 continue  # a forced exit cancels same-morning entries
-            fills.extend(self._buy(order, event))
-        return fills
+            yield from self._buy(order, event)
 
     # ------------------------------------------------------------ execution
-    def _sell(self, order: OrderEvent, event: MarketEvent) -> list[FillEvent]:
+    def _sell(self, order: OrderEvent, event: MarketEvent) -> Iterator[FillEvent]:
         raw = event.prices.get(order.symbol, float("nan"))
         if not DataFeed.printable(raw):
-            return []  # no printable open; the next decision will re-issue
+            return  # no printable open; the next decision will re-issue
         shares = min(order.shares, self.portfolio.sellable(order.symbol))
         if shares <= 0:
-            return []  # T+1 hard guard
+            return  # T+1 hard guard
         px = self.cost.sell_price(raw)
         turnover = shares * px
         commission = self.cost.commission(turnover)
         stamp = turnover * self.cost.stamp_tax_rate
-        return [
-            FillEvent(
-                event.timestamp, order.symbol, "SELL", shares, px, turnover,
-                commission, stamp, order.reason,
-            )
-        ]
+        yield FillEvent(
+            event.timestamp, order.symbol, "SELL", shares, px, turnover,
+            commission, stamp, order.reason,
+        )
 
-    def _buy(self, order: OrderEvent, event: MarketEvent) -> list[FillEvent]:
+    def _buy(self, order: OrderEvent, event: MarketEvent) -> Iterator[FillEvent]:
         raw = event.prices.get(order.symbol, float("nan"))
         if not DataFeed.printable(raw) or order.shares < self.lot:
-            return []
+            return
         px = self.cost.buy_price(raw)
         shares = order.shares
         turnover = 0.0
@@ -94,10 +99,8 @@ class SimulatedExecutionHandler:
                 break
             shares -= self.lot
         if not affordable:
-            return []
-        return [
-            FillEvent(
-                event.timestamp, order.symbol, "BUY", shares, px, turnover,
-                fee, 0.0, "signal",
-            )
-        ]
+            return
+        yield FillEvent(
+            event.timestamp, order.symbol, "BUY", shares, px, turnover,
+            fee, 0.0, "signal",
+        )
