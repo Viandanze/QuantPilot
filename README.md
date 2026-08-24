@@ -17,6 +17,9 @@ framework should be comfortable showing.
 
 - **Pluggable strategies** behind one `Strategy` interface: dual MA crossover,
   cross-sectional momentum rotation, grid trading
+- **Event-driven engine**: DataFeed, Strategy, RiskManager, Portfolio and
+  ExecutionHandler cooperate over one FIFO event queue; a per-fill ledger audit
+  aborts the run the moment money goes missing
 - **Realistic cost model**: commission 0.025% per side (5 CNY minimum), stamp tax
   0.1% on sells, 0.1% adverse slippage on both sides - always on
 - **T+1 settlement** and 100-share board lots, decided-on-close / filled-at-next-open
@@ -24,7 +27,8 @@ framework should be comfortable showing.
 - **Risk overlay**: 20% single-name cap, -8% per-position stop loss, -15% portfolio
   drawdown guard that forces flat and imposes a cash cooldown
 - **Self-contained HTML reports**: equity curve vs CSI 300, drawdown, Sharpe, CAGR,
-  win rate, full trade log, in-sample / out-of-sample split
+  win rate, full trade log, in-sample / out-of-sample split and a backtest-integrity
+  section (look-ahead defences, ledger reconciliation with PASS/FAIL badges)
 - **Daily signal CLI**: BUY / SELL / HOLD plus suggested (pre-cap) weights per strategy
 - **Free data only**: akshare (no token), with deterministic offline sample data for
   demos and CI
@@ -60,13 +64,59 @@ in `data/cache/` (gitignored).
 ```
 data/        akshare loader (eastmoney primary, sina fallback), cache, sample generator
 strategies/  Strategy interface + dual_ma / momentum / grid plugins
-backtest/    cost model + event-driven engine (T+1, next-open fills)
+engine/      event-driven core: typed events, FIFO queue, data feed, portfolio,
+             execution handler, runner
+backtest/    cost model + compatibility facade over the engine core
 risk/        position cap, stop loss, drawdown cooldown
-report/      metrics + self-contained HTML rendering
+report/      metrics + self-contained HTML rendering (incl. integrity section)
 signal.py    CLI: per-strategy daily signals
 backtest.py  CLI: run backtests, write reports
-tests/       pytest suite (costs, signals, engine constraints, risk rules)
+tests/       pytest suite (68 tests: costs, signals, engine constraints, risk rules,
+             event core, V1/V2 equivalence, look-ahead defences, reconciliation)
 ```
+
+## Architecture
+
+Since v0.2 the engine is event-driven: five decoupled modules cooperate over one
+FIFO queue, and only the runner knows how they plug together. Each session `d`
+unfolds as:
+
+```
+  DataFeed
+    |-- MarketEvent(open, d) ---------------------------------------+
+    |     ExecutionHandler.execute_pending (a generator)             |
+    |       yields FillEvent -> queue -> Portfolio.on_fill           |
+    |       ...booked before the generator sizes the next order      |
+    |                                                                |
+    |-- MarketEvent(close, d) ---------------------------------------+
+    |     Portfolio.mark_to_market -> equity / exposure point        |
+    |     RiskManager.on_close -> forced OrderEvent(s)               |
+    |     Strategy.on_bar -> SignalEvent                             |
+    |     RiskManager.apply_caps -> capped weights                   |
+    |     Portfolio.orders_from_weights -> OrderEvent(s)             |
+    |     ExecutionHandler.enqueue (parked until d+1's open)         |
+    v
+  next session ...
+```
+
+| Module | Owns | Emits |
+| --- | --- | --- |
+| `engine/datafeed.py` | the only door market data walks through; as-of prices per session phase | `MarketEvent` |
+| `strategies/` | decision logic: `on_bar` hook, defaulting to the classic `target_weights` interface | `SignalEvent` |
+| `risk/manager.py` | position caps, stop loss, drawdown cooldown | capped weights, forced `OrderEvent`s |
+| `engine/portfolio.py` | cash, positions, whole-lot order sizing, per-fill ledger audit | `OrderEvent`s |
+| `engine/execution.py` | next-open fills, T+1 clamps, cash-affordability shrinking | `FillEvent` |
+
+`backtest/engine.py` stays the public entry point: it re-exports `Engine`,
+`BacktestResult`, `Position`, `Trade` and `RoundTrip` from the new core, so the
+CLIs, the reports and the original test suite run unchanged.
+
+Morning accounting is interleaved with execution: `execute_pending` is a
+generator that pauses after each fill, the runner routes that fill through the
+queue and books it in the portfolio, and only then does the generator size the
+next order. A morning sell therefore frees cash that the very next buy's
+affordability check can see - the sequential semantics of a daily loop,
+expressed in event flow.
 
 ## Methodology
 
@@ -106,6 +156,69 @@ performance figures are **net** of these costs.
   strategies may re-engage (the peak resets afterwards)
 
 These rules are designed to make the book hard to blow up, not to add alpha.
+
+## Backtest integrity
+
+Two failure modes silently corrupt a backtest: using future data, and losing
+track of money. The engine treats both as architectural properties, not
+conventions.
+
+### No look-ahead: a lock, not a promise
+
+- **Temporal lock in the engine.** Orders are born only while processing a
+  close-phase event and are consumed only by the next session's open phase, so
+  a signal can structurally never fill on the bar that produced it. Strategies
+  never receive the queue, the portfolio or the execution handler - their only
+  output is a weight map - so the timeline cannot be bypassed from strategy
+  code, even by accident.
+- **As-of data feed.** Every `MarketEvent` is built exclusively from bars dated
+  at or before its session; future prices are censored at the single door data
+  walks through.
+- **Causal strategies.** Plugins precompute rolling indicators over the panel
+  once and query them as-of the decision date; a rolling statistic at index `t`
+  depends only on data at or before `t`.
+
+The suite proves this with probes rather than trust:
+
+- **Prefix invariance**: rebuilding the whole pipeline from data truncated at a
+  cutoff reproduces the full-data run's equity curve and trade list up to that
+  cutoff (all three strategies, two cutoffs). Appending future data cannot
+  change the past.
+- **Future-spike probe**: a flat panel that quintuples after date `T` - with
+  the strategies handed the full spiked panel - produces runs ending at `T`
+  identical to the flat panel's. Any leak anywhere would front-run the spike.
+- **Wire audits**: with event tracing on, every streamed price must equal the
+  panel's own as-of value, signals and orders may only be born in the close
+  phase, and every fill must print strictly after the order that produced it,
+  at that morning's slipped open price.
+
+### Money conservation: an audit after every fill
+
+After every single fill the portfolio re-checks a double-entry style identity:
+
+```
+cash + inventory at price-only basis + fees paid
+    == initial capital + realized gross gains
+```
+
+Average-cost division introduces float rounding of a few ulps per partial fill,
+so the check runs against a small tolerance (the larger of 1e-6 CNY and 1e-8 of
+capital) and records the worst observed drift; a drift beyond tolerance
+**aborts the backtest** instead of publishing broken numbers. At the close of a
+run, four more identities must hold: cash flow (capital + sells - buys -
+costs), equity marking (cash + market value), and both PnL decompositions
+(net: realized + unrealized; gross: realized + unrealized - costs). The HTML
+report renders all of this in its **Backtest integrity** section with
+PASS/FAIL badges, next to the IS/OOS split.
+
+### Engine lineage
+
+The event-driven core reproduces the retired daily-loop engine's arithmetic
+operation-for-operation - same fill priority, same float ordering. A frozen
+reference (captured from the v0.1 engine with the CLI recipe) pins metrics,
+first-trade anchors, ledger integrity and determinism for all three bundled
+strategies. On the capture platform the two engines agree bit-for-bit; any
+residual difference on other platforms is ulp-level floating-point noise.
 
 ## Strategies
 
@@ -165,9 +278,13 @@ beat, and precisely why the frictions are not optional here.
 
 ## Testing
 
-`pytest` runs 29 tests covering the cost model, strategy signal logic, engine
-constraints (next-open fills, T+1 locks, caps, stop loss, drawdown cooldown) and the
-sample-data generator, all offline.
+`pytest` runs 68 tests, all offline: the cost model, strategy signal logic,
+engine constraints (next-open fills, T+1 locks, caps, stop loss, drawdown
+cooldown), the sample-data generator, the event vocabulary and queue, the
+event-driven core (data feed, portfolio, execution handler), V1/V2 equivalence
+against frozen references, look-ahead defences (prefix invariance,
+future-spike probe, wire audits) and money conservation (hand-computed
+identities, tamper detection).
 
 ## Disclaimer
 
