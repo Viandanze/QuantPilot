@@ -7,7 +7,7 @@ from strategies.dual_ma import DualMAStrategy
 from strategies.grid import GridStrategy
 from strategies.momentum import MomentumStrategy
 
-from conftest import make_panel
+from tests.conftest import make_panel
 
 
 # ------------------------------------------------------------------ dual MA

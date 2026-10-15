@@ -14,3 +14,4 @@ build/
 *.so
 *.o
 *.a
+.vscode/

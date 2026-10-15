@@ -8,7 +8,7 @@ from engine.events import CLOSE, OPEN, FillEvent, MarketEvent, OrderEvent
 from engine.execution import SimulatedExecutionHandler
 from engine.portfolio import Portfolio
 
-from conftest import make_panel
+from tests.conftest import make_panel
 
 
 def mk_event(date, phase, prices):

@@ -5,7 +5,7 @@ from backtest.costs import CostModel
 from backtest.engine import Engine, Position
 from risk.manager import RiskConfig, RiskManager
 
-from conftest import AlwaysLong, LongThenFlat, make_panel
+from tests.conftest import AlwaysLong, LongThenFlat, make_panel
 
 
 def full_trust_risk(**overrides):
@@ -35,7 +35,7 @@ def test_buy_fills_next_open_with_costs():
     assert trade.date == result.equity.index[1]               # next session open
     assert trade.price == pytest.approx(100.0 * 1.001)        # slippage
     assert trade.shares == 900                                # cash-affordable lots
-    fee = max(900 * trade.price * 2.5e-4, 5.0)
+    fee = max(900 * trade.price * 3.0e-4, 5.0) + 900 * trade.price * 1e-5  # commission + transfer
     assert trade.fee == pytest.approx(fee)
     assert trade.fee_stamp == 0.0                             # no stamp tax on buys
     assert trade.cash_after == pytest.approx(100_000.0 - 900 * trade.price - fee)
@@ -60,7 +60,7 @@ def test_sell_deferred_one_session():
     sell = result.trades[1]
     assert sell.price == pytest.approx(100.0 * 0.999)
     assert sell.fee == pytest.approx(
-        max(sell.turnover * 2.5e-4, 5.0) + sell.turnover * 1e-3
+        max(sell.turnover * 3.0e-4, 5.0) + sell.turnover * (5e-4 + 1e-5)  # commission + stamp + transfer
     )
     assert result.round_trips[0].pnl < 0  # round trip pays the spread + fees
 

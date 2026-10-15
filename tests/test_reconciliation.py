@@ -47,20 +47,20 @@ def test_hand_computed_round_trip_conserves_every_yuan():
     raw_buy = 100.0
     buy_px = COST.buy_price(raw_buy)             # 100.1 after slippage
     buy_turnover = 100 * buy_px                  # 10_010.0
-    buy_fee = COST.buy_fee(buy_turnover)         # 5.0 (commission minimum)
+    buy_fee = COST.buy_fee(buy_turnover)         # 5.0 min commission + 0.1001 transfer
     assert buy_px == pytest.approx(100.1)
     assert buy_turnover == pytest.approx(10_010.0)
-    assert buy_fee == pytest.approx(5.0)
+    assert buy_fee == pytest.approx(5.1001)
 
     pf.on_fill(_fill("2024-01-02", "AAA", "BUY", 100, raw_buy, buy_fee))
-    assert pf.cash == pytest.approx(100_000.0 - 10_015.0)          # 89_985.0
+    assert pf.cash == pytest.approx(100_000.0 - 10_015.1001)        # 89_984.8999
     pos = pf.positions["AAA"]
     assert pos.shares == 100 and pos.locked == 100                  # T+1
-    assert pos.avg_cost == pytest.approx(100.15)                    # (10_010 + 5) / 100
+    assert pos.avg_cost == pytest.approx(100.151001)                # (10_010 + 5.1001) / 100
     assert pos.avg_cost_gross == pytest.approx(100.1)               # price-only basis
 
     # ledger identity right after the buy: nothing realized yet
-    # 89_985 cash + 10_010 inventory + 5 fees == 100_000 capital
+    # 89_984.8999 cash + 10_010 inventory + 5.1001 fees == 100_000 capital
     assert pf._ledger_value() == pytest.approx(100_000.0)
 
     # --- sell all 100 shares at a raw open of 110 the next morning -------
@@ -68,26 +68,27 @@ def test_hand_computed_round_trip_conserves_every_yuan():
     raw_sell = 110.0
     sell_px = COST.sell_price(raw_sell)         # 109.89 after slippage
     sell_turnover = 100 * sell_px                # 10_989.0
-    sell_fee = COST.sell_fee(sell_turnover)      # 5.0 + 10.989 stamp = 15.989
+    sell_fee = COST.sell_fee(sell_turnover)      # 5.0 commission + 5.4945 stamp + 0.10989 transfer
     assert sell_px == pytest.approx(109.89)
     assert sell_turnover == pytest.approx(10_989.0)
-    assert sell_fee == pytest.approx(15.989)
+    assert sell_fee == pytest.approx(10.60439)
 
     pf.on_fill(_fill("2024-01-03", "AAA", "SELL", 100, raw_sell,
-                     COST.commission(sell_turnover), sell_turnover * COST.stamp_tax_rate))
-    assert pf.cash == pytest.approx(89_985.0 + 10_989.0 - 15.989)   # 100_958.011
+                     COST.commission(sell_turnover) + sell_turnover * COST.transfer_fee_rate,
+                     sell_turnover * COST.stamp_tax_rate))
+    assert pf.cash == pytest.approx(89_984.8999 + 10_989.0 - 10.60439)  # 100_963.29551
 
     # cash-flow identity: capital + sells - buys - fees
-    assert pf.cash == pytest.approx(100_000.0 + 10_989.0 - 10_010.0 - 20.989)
+    assert pf.cash == pytest.approx(100_000.0 + 10_989.0 - 10_010.0 - 15.70449)
 
     # realized PnL, gross and net, hand-computed
     assert pf.total_realized_gross == pytest.approx(10_989.0 - 10_010.0)   # 979.0
     trade = pf.trades[-1]
-    assert trade.realized_pnl == pytest.approx((10_989.0 - 15.989) - 100.15 * 100)  # 958.011
-    assert pf.round_trips and pf.round_trips[0].pnl == pytest.approx(958.011)
+    assert trade.realized_pnl == pytest.approx((10_989.0 - 10.60439) - 100.151001 * 100)  # 963.29551
+    assert pf.round_trips and pf.round_trips[0].pnl == pytest.approx(963.29551)
 
     # full ledger identity after the round trip:
-    # 100_958.011 cash + 0 inventory + 20.989 fees == 100_000 + 979 realized_gross
+    # 100_963.29551 cash + 0 inventory + 15.70449 fees == 100_000 + 979 realized_gross
     assert pf._ledger_value() == pytest.approx(100_000.0 + 979.0)
 
     # mark the book once so the equity identity has a mark to compare to
@@ -98,12 +99,12 @@ def test_hand_computed_round_trip_conserves_every_yuan():
     assert integrity["fills_audited"] == 2
     assert integrity["unmarked_open_positions"] == 0
     rec = integrity["reconciliation"]
-    assert rec["final_equity"] == pytest.approx(100_958.011)
-    assert rec["total_pnl"] == pytest.approx(958.011)
+    assert rec["final_equity"] == pytest.approx(100_963.29551)
+    assert rec["total_pnl"] == pytest.approx(963.29551)
     assert rec["total_pnl"] == pytest.approx(rec["realized_pnl_net"] + rec["unrealized_pnl_net"])
     assert rec["total_pnl"] == pytest.approx(
         rec["realized_pnl_gross"] + rec["unrealized_pnl_gross"] - rec["total_costs"])
-    assert rec["total_costs"] == pytest.approx(20.989)
+    assert rec["total_costs"] == pytest.approx(15.70449)
 
 
 def test_missing_money_trips_the_per_fill_audit():
