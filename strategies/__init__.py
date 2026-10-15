@@ -2,13 +2,17 @@
 
 from strategies.base import Strategy
 from strategies.dual_ma import DualMAStrategy
+from strategies.etf_rotation import EtfRotation
 from strategies.grid import GridStrategy
+from strategies.mean_reversion import MeanReversion
 from strategies.momentum import MomentumStrategy
 
 STRATEGIES = {
     DualMAStrategy.name: DualMAStrategy,
-    MomentumStrategy.name: MomentumStrategy,
+    EtfRotation.name: EtfRotation,
     GridStrategy.name: GridStrategy,
+    MeanReversion.name: MeanReversion,
+    MomentumStrategy.name: MomentumStrategy,
 }
 
 

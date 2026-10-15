@@ -416,7 +416,7 @@ def render_report(
         ("Period", f"{fmt_date(eq.index[0])} .. {fmt_date(eq.index[-1])} ({len(eq)} sessions)"),
         ("Initial capital", fmt_money(meta.get("capital")) + " CNY"),
         ("Data source", data_source),
-        ("Cost model", "commission 0.025%/side (min 5 CNY), stamp tax 0.1% sell, slippage 0.1%/side"),
+        ("Cost model", "commission 0.03%/side (min 5 CNY), stamp tax 0.05% sell, transfer 0.001% both, slippage 0.1%/side"),
         ("Execution", "close-of-day signals filled at next open, 100-share lots, T+1"),
         ("Risk rules", "20% single-name cap, -8% stop loss, -15% drawdown -> flat + cooldown"),
     ]
