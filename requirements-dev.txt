@@ -1,0 +1,4 @@
+# CI / development-only dependencies.
+# Runtime dependencies stay in requirements.txt -- do not merge.
+pytest-cov>=4.1
+pybind11>=2.11

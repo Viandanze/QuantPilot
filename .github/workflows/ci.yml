@@ -8,35 +8,67 @@ on:
 
 jobs:
   test-suite:
-    name: Build and run the full test suite
+    name: Build C++ core and run the full test suite (coverage gate)
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip setuptools
-          python -m pip install -r requirements.txt pybind11
+          python -m pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Configure CMake (Release build of the C++17 matching core)
+      - name: Configure CMake (Release build of the C++17 native targets)
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+                -DPYTHON_EXECUTABLE="$(which python)" \
+                -DPython_EXECUTABLE="$(which python)" \
+                -DPYBIND11_FINDPYTHON=ON \
                 -Dpybind11_DIR="$(python -m pybind11 --cmakedir)"
 
-      - name: Build the matching core, native tests and Python bindings
-        run: cmake --build build --parallel
+      # Why not `cmake --build build --target backtest_core` on Linux?
+      # CMakeLists.txt hardcodes MinGW-only link options
+      # (-static -static-libgcc -static-libstdc++) on both pybind11 module
+      # targets (see cpp/BACKTEST_MVP_REPORT.md section 3 and section 7.3).
+      # On Linux, -static pulls the non-PIC crtbeginT.o and fails with
+      # "relocation R_X86_64_32 against hidden symbol `__TMC_END__' can not
+      # be used when making a shared object". CMakeLists.txt is outside the
+      # scope of this workflow, so on Linux the two Python extension modules
+      # are compiled directly with g++ (without -static) in the step below.
+      - name: Build native test binaries (CMake, pybind targets excluded)
+        run: cmake --build build --parallel --target qp_orderbook_test qp_orderbook_bench qp_backtest_core_test
 
-      - name: Run the native order book tests (130 checks)
+      - name: Run native order book tests (130 checks)
         run: ./build/qp_orderbook_test
 
-      - name: Verify the qp_matching Python extension was built
-        run: python -c "import qp_matching; print('qp_matching import OK')"
+      - name: Run native backtest core self-test
+        run: ./build/qp_backtest_core_test
 
-      - name: Run the Python test suite (82 tests)
-        run: pytest tests/ -q
+      - name: Compile Python extension modules with g++ (no -static on Linux)
+        run: |
+          set -euo pipefail
+          EXT_SUFFIX=$(python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
+          PYBIND_INC=$(python -m pybind11 --includes)
+          g++ -O3 -std=c++17 -shared -fPIC ${PYBIND_INC} \
+              cpp/bindings.cpp cpp/order_book.cpp -o "qp_matching${EXT_SUFFIX}"
+          g++ -O3 -std=c++17 -shared -fPIC ${PYBIND_INC} \
+              cpp/backtest_bindings.cpp cpp/backtest_core.cpp -o "backtest_core${EXT_SUFFIX}"
+          ls -l qp_matching*.so backtest_core*.so
+
+      - name: Assert the C++ extensions import (fail loudly, never skip)
+        run: |
+          python -c "import qp_matching; print('qp_matching import OK')"
+          python -c "import backtest_core; print('backtest_core import OK')"
+
+      - name: Run the Python test suite with coverage gate (>= 73%)
+        run: |
+          pytest tests/ -q \
+            --cov=engine --cov=strategies --cov=risk --cov=data --cov=backtest --cov=report \
+            --cov-report=term-missing \
+            --cov-fail-under=73

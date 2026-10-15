@@ -54,8 +54,8 @@ python backtest.py --strategy momentum --start 2023-01-01 --end 2025-12-31 \
 python backtest.py --offline --split 0
 
 # daily signals as of the latest session
-python signal.py
-python signal.py --symbols 600519,510300 --date 2026-08-21
+python signal_cli.py
+python signal_cli.py --symbols 600519,510300 --date 2026-08-21
 
 # tests
 pytest
@@ -83,7 +83,7 @@ report/      metrics + self-contained HTML rendering (incl. integrity section)
 cpp/         C++17 matching core: limit order book, native tests, pybind11
              bindings, native micro-benchmark
 benchmarks/  pure Python reference order book + throughput benchmark
-signal.py    CLI: per-strategy daily signals
+signal_cli.py CLI: per-strategy daily signals
 backtest.py  CLI: run backtests, write reports
 tests/       pytest suite (82 tests: costs, signals, engine constraints, risk rules,
              event core, V1/V2 equivalence, look-ahead defences, reconciliation,
