@@ -10,22 +10,9 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import logging
 import pathlib
 import sys
-import sysconfig
-
-# The sibling CLI signal.py shadows the stdlib `signal` module while this
-# script's directory is first on sys.path; pin the stdlib version so
-# third-party imports (pandas, akshare, ...) keep working.
-if "signal" not in sys.modules:
-    _stdlib = pathlib.Path(sysconfig.get_paths()["stdlib"]) / "signal.py"
-    if _stdlib.exists():
-        _spec = importlib.util.spec_from_file_location("signal", _stdlib)
-        _module = importlib.util.module_from_spec(_spec)
-        sys.modules["signal"] = _module
-        _spec.loader.exec_module(_module)
 
 import pandas as pd
 

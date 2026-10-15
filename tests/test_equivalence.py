@@ -6,7 +6,10 @@ results operation-for-operation. The reference numbers below were
 captured from the V1 engine at commit ``90d5802`` using the same recipe
 as the CLI: built-in sample data, window 2024-01-01..2026-08-21, a
 one-year fetch buffer for indicator warmup, default strategy parameters,
-and the default cost and risk configuration.
+and the cost regime in force at capture time (stamp tax 0.1% sell-side, no
+transfer fee). ``_run`` pins that legacy ``CostModel`` explicitly so the
+frozen numbers keep validating the engine rewrite while the live default
+cost regime (2023-08-28 stamp cut + transfer fee) evolves independently.
 
 On the capture platform the V2 engine reproduces these values
 bit-for-bit - identical trade lists, equity curves, fee totals and
@@ -152,11 +155,17 @@ def panel():
     return loader.build_panel(frames)
 
 
+# Fee regime at the V1 capture (commit 90d5802, pre-2023-08-28 rules):
+# stamp tax 0.1% sell-side, no transfer fee. Pinned so the frozen reference
+# numbers keep testing engine arithmetic, not the cost model.
+LEGACY_COSTS = CostModel(commission_rate=2.5e-4, stamp_tax_rate=1.0e-3, transfer_fee_rate=0.0)
+
+
 def _run(panel, strategy_name):
     engine = Engine(
         panel,
         create(strategy_name, panel),
-        CostModel(),
+        LEGACY_COSTS,
         RiskManager(RiskConfig()),
         capital=1_000_000.0,
     )

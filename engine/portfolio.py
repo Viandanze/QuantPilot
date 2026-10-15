@@ -59,7 +59,7 @@ class Trade:
     price: float              # executed price (after slippage)
     turnover: float
     fee: float
-    fee_commission: float
+    fee_commission: float       # all non-stamp fees: commission + transfer
     fee_stamp: float
     realized_pnl: float       # sells only; buys record 0.0
     cash_after: float

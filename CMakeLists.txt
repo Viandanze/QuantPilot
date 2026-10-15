@@ -33,6 +33,9 @@ find_package(pybind11 CONFIG QUIET)
 if(pybind11_FOUND)
     pybind11_add_module(qp_matching cpp/bindings.cpp cpp/order_book.cpp)
     target_include_directories(qp_matching PRIVATE cpp)
+    # Self-contained like backtest_core below: Python 3.8+ does not search
+    # PATH when loading extensions, so MinGW runtime DLLs must link static.
+    target_link_options(qp_matching PRIVATE -static -static-libgcc -static-libstdc++)
     set_target_properties(qp_matching PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}")
@@ -42,4 +45,25 @@ else()
         "Install it with `pip install pybind11` and point CMake at it, e.g. "
         "-Dpybind11_DIR=\"$(python -m pybind11 --cmakedir)\". "
         "The native test and benchmark binaries are unaffected.")
+endif()
+
+# ---------------------------------------------------------------------------
+# Native backtest core: vectorized indicators + dual-MA daily backtest that
+# mirrors the Python event-driven engine operation-for-operation.
+# ---------------------------------------------------------------------------
+add_executable(qp_backtest_core_test
+    cpp/backtest_core_test.cpp cpp/backtest_core.cpp)
+target_include_directories(qp_backtest_core_test PRIVATE cpp)
+
+if(pybind11_FOUND)
+    pybind11_add_module(backtest_core
+        cpp/backtest_bindings.cpp cpp/backtest_core.cpp)
+    target_include_directories(backtest_core PRIVATE cpp)
+    # Keep the extension self-contained: no MinGW runtime DLLs needed at
+    # import time (Python 3.8+ does not search PATH when loading extensions,
+    # so libwinpthread/libstdc++ must be linked statically).
+    target_link_options(backtest_core PRIVATE -static -static-libgcc -static-libstdc++)
+    set_target_properties(backtest_core PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}")
 endif()

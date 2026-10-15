@@ -21,7 +21,7 @@ Execution rules, mirroring the original engine exactly:
   sellable (the next decision re-issues what is still wanted)
 - buys shrink by whole lots until cash covers turnover plus fees
 - fills are priced with adverse slippage and charged commission (min 5 CNY)
-  plus stamp tax on sells
+  plus transfer fee on both sides, and stamp tax on sells
 - orders that cannot print (no known open price) are dropped, not deferred
 """
 from __future__ import annotations
@@ -75,7 +75,7 @@ class SimulatedExecutionHandler:
             return  # T+1 hard guard
         px = self.cost.sell_price(raw)
         turnover = shares * px
-        commission = self.cost.commission(turnover)
+        commission = self.cost.commission(turnover) + turnover * self.cost.transfer_fee_rate
         stamp = turnover * self.cost.stamp_tax_rate
         yield FillEvent(
             event.timestamp, order.symbol, "SELL", shares, px, turnover,
