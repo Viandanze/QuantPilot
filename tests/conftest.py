@@ -1,34 +1,11 @@
 """Shared fixtures and helpers for the test suite."""
 from __future__ import annotations
 
-import importlib.util
 import pathlib
 import sys
-import sysconfig
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-
-def pin_stdlib_signal() -> None:
-    """Keep stdlib `signal` importable despite the root-level signal.py CLI.
-
-    The project deliberately ships a top-level ``signal.py`` entry point,
-    which would shadow the standard library module once the project root is
-    on ``sys.path``. Pin the real stdlib module first so third-party imports
-    of ``signal`` keep working.
-    """
-    if "signal" in sys.modules:
-        return
-    stdlib = pathlib.Path(sysconfig.get_paths()["stdlib"]) / "signal.py"
-    if not stdlib.exists():
-        return
-    spec = importlib.util.spec_from_file_location("signal", stdlib)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["signal"] = module
-    spec.loader.exec_module(module)
-
-
-pin_stdlib_signal()
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
