@@ -13,6 +13,15 @@ class MomentumStrategy(Strategy):
     everything else is sold. Between rebalance dates the previous targets are
     held unchanged. Ranking uses the trailing ``lookback``-session return up
     to the decision date only - no look-ahead.
+
+    ``allow_negative`` (default True) keeps symbols with negative trailing
+    return eligible for the top slots, so on always-investable universes
+    (e.g. bond/gold/cross-border ETFs) the book still holds the best of a
+    bad bunch. With False, non-positive-return names are skipped and their
+    weight stays in cash until the next rebalance.
+
+    ``symbols`` optionally restricts the ranking universe; it defaults to
+    every symbol in the panel.
     """
 
     name = "momentum"
@@ -24,11 +33,13 @@ class MomentumStrategy(Strategy):
         top_n: int = 5,
         rebalance_every: int = 20,
         symbols=None,
+        allow_negative: bool = True,
     ):
         if lookback < 1 or top_n < 1 or rebalance_every < 1:
             raise ValueError("lookback, top_n and rebalance_every must be positive")
         self.symbols = sorted(symbols or panel.keys())
         self.lookback, self.top_n, self.every = lookback, top_n, rebalance_every
+        self.allow_negative = allow_negative
         closes = pd.DataFrame({s: panel[s]["close"] for s in self.symbols}).sort_index()
         self.closes = closes
         self.returns = closes / closes.shift(lookback) - 1.0
@@ -40,11 +51,13 @@ class MomentumStrategy(Strategy):
     def _rebalance(self, date: pd.Timestamp) -> None:
         row = asof_row(self.returns, date).dropna()
         ranked = sorted(row.items(), key=lambda kv: (-kv[1], kv[0]))
-        top = {s for s, _ in ranked[: self.top_n]}
-        weight = 1.0 / self.top_n
-        self._last = {s: (weight if s in top else 0.0) for s in self.symbols}
         self._ranks = {s: (i + 1, float(r)) for i, (s, r) in enumerate(ranked)}
         self._n_ranked = len(ranked)
+        candidates = ranked if self.allow_negative else [
+            (s, r) for s, r in ranked if r > 0.0]
+        top = {s for s, _ in candidates[: self.top_n]}
+        weight = 1.0 / self.top_n
+        self._last = {s: (weight if s in top else 0.0) for s in self.symbols}
 
     def target_weights(self, date: pd.Timestamp, equity: float) -> dict[str, float]:
         if self._last is None or pd.Timestamp(date) in self.schedule:

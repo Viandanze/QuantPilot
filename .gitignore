@@ -15,3 +15,9 @@ build/
 *.o
 *.a
 .vscode/
+
+# Local run artifacts: ETF rotation reports and the frozen v1 capture
+# (reference values live inlined in tests/test_equivalence.py)
+reports_oos_*/
+reports_output_etf*/
+v1_baseline/

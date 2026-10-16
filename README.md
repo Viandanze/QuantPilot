@@ -35,6 +35,10 @@ framework should be comfortable showing.
   win rate, full trade log, in-sample / out-of-sample split and a backtest-integrity
   section (look-ahead defences, ledger reconciliation with PASS/FAIL badges)
 - **Daily signal CLI**: BUY / SELL / HOLD plus suggested (pre-cap) weights per strategy
+- **Parameterized momentum**: the rotation knobs (`--mom-top`, `--mom-lookback`,
+  `--mom-every`, `--mom-no-negative`) are CLI flags, `grid_scan.py` sweeps
+  (top_n x lookback x rebalance_every) combinations over cached data, and
+  `make_charts.py` exports standalone equity/drawdown charts
 - **Free data only**: akshare (no token), with deterministic offline sample data for
   demos and CI
 
@@ -56,6 +60,12 @@ python backtest.py --offline --split 0
 # daily signals as of the latest session
 python signal_cli.py
 python signal_cli.py --symbols 600519,510300 --date 2026-08-21
+
+# ETF cross-asset rotation: top-1 of treasury / Nasdaq / S&P 500 / gold ETFs,
+# rebalanced every 10 sessions, 70/30 in-sample/out-of-sample validation
+python backtest.py --strategy momentum --symbols 511260,513100,513500,518880 \
+    --start 2021-10-12 --end 2026-10-09 --mom-top 1 --mom-every 10 \
+    --split 0.7 --out reports_oos_top1e10
 
 # tests
 pytest
@@ -85,6 +95,8 @@ cpp/         C++17 matching core: limit order book, native tests, pybind11
 benchmarks/  pure Python reference order book + throughput benchmark
 signal_cli.py CLI: per-strategy daily signals
 backtest.py  CLI: run backtests, write reports
+grid_scan.py CLI: batch momentum (top_n x lookback x rebalance_every) sweeps
+make_charts.py CLI: render equity/drawdown PNGs from report data
 tests/       pytest suite (82 tests: costs, signals, engine constraints, risk rules,
              event core, V1/V2 equivalence, look-ahead defences, reconciliation,
              matching bindings + C++/Python equivalence)
@@ -374,6 +386,10 @@ median-of-5 measurements on one shared CPU core, not peak marketing figures.
 | `momentum` | every N sessions rank symbols by trailing 20-session return, hold the top 5 at equal weight | lookback 20, top 5, rebalance 20 |
 | `grid` | fixed range from the trailing 120 sessions (+/-10% buffer); allocation steps down from full at the bottom band to zero at the top | 8 levels |
 
+The momentum knobs are exposed on the CLI (`--mom-top`, `--mom-lookback`,
+`--mom-every`, `--mom-no-negative`); the ETF rotation below is exactly this
+strategy configured as top-1, rebalance every 10 sessions.
+
 ## Anti-overfitting measures
 
 - **Costs are always on.** There is no "gross of fees" mode to make equity curves
@@ -391,6 +407,30 @@ median-of-5 measurements on one shared CPU core, not peak marketing figures.
   same dates, and label synthetic-data demo runs prominently.
 
 ## Sample results (real data)
+
+### ETF cross-asset rotation (the configuration used for daily signals)
+
+Momentum over 511260 / 513100 / 513500 / 518880 (10-year treasury, Nasdaq-100,
+S&P 500 and gold ETFs): top-1 at full weight, rebalanced every 10 sessions,
+negative momentum still held - on an always-investable universe the best of a
+bad bunch is the intended exposure. Window 2021-10-12 .. 2026-10-09
+(1211 sessions), 1,000,000 CNY, the same frictions and risk rules as above,
+70% in-sample / 30% out-of-sample. Reproduce with the ETF command in
+Quickstart.
+
+| Segment | Total return | CAGR | Max drawdown | Sharpe | Win rate |
+| --- | --- | --- | --- | --- | --- |
+| Full window (net) | +24.41% | +4.65% | -4.41% | 1.21 | 56.45% |
+| Out-of-sample (last 30%) | +12.20% | +8.29% | -3.50% | 1.61 | 66.67% |
+
+Over the same window the CSI 300 returned -11.60% with a -37.86% drawdown, so
+the rotation added ~7.2 pp of annualized excess. Read it with the usual
+scepticism: four instruments is a tiny universe, and a parameter set this
+small is always one lucky window away from looking ordinary - the 70/30 split
+and the out-of-sample segment above are the actual defence, not the point
+estimates.
+
+### Stock universe (default configuration)
 
 Window 2023-08-24 .. 2026-08-24 (726 sessions), universe 600519 / 000858 / 601318 /
 000333 / 600036 / 510300 (forward-adjusted daily bars via akshare), 1,000,000 CNY,

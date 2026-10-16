@@ -6,6 +6,9 @@ Examples:
     python backtest.py --strategy dual_ma
     python backtest.py --start 2023-01-01 --end 2025-12-31
     python backtest.py --offline --split 0      # synthetic demo, no network
+    python backtest.py --strategy momentum --symbols 511260,513100,513500,518880 \
+        --start 2021-10-12 --end 2026-10-09 --mom-top 1 --mom-every 10 \
+        --split 0.7 --out reports_oos_top1e10  # ETF top-1 rotation, 10-session
 """
 from __future__ import annotations
 
@@ -46,15 +49,26 @@ def parse_args(argv=None):
                         help="in-sample fraction for IS/OOS validation, 0 disables")
     parser.add_argument("--offline", action="store_true",
                         help="force built-in synthetic sample data (skip akshare)")
+    parser.add_argument("--mom-top", type=int, default=None,
+                        help="momentum top_n override")
+    parser.add_argument("--mom-lookback", type=int, default=None,
+                        help="momentum lookback override (sessions)")
+    parser.add_argument("--mom-every", type=int, default=None,
+                        help="momentum rebalance_every override (sessions)")
+    parser.add_argument("--mom-no-negative", action="store_true",
+                        help="momentum: skip non-positive trailing-return symbols (their weight stays cash)")
     parser.add_argument("--out", default="reports_output", help="output directory")
     return parser.parse_args(argv)
 
 
-def run_strategy(name, panel, bench, start, end, capital, trade_dates, split):
+def run_strategy(name, panel, bench, start, end, capital, trade_dates, split,
+                 mom_overrides=None):
     def fresh_engine():
+        strategy = (create(name, panel, **(mom_overrides or {}))
+                    if name == "momentum" and mom_overrides else create(name, panel))
         return Engine(
             panel,
-            create(name, panel),
+            strategy,
             CostModel(),
             RiskManager(RiskConfig()),
             benchmark=bench,
@@ -118,13 +132,26 @@ def main(argv=None):
     if data_mode != "akshare":
         log.warning("not real market data (%s): treat results as a pipeline demo only", data_mode)
 
+    mom_overrides = {}
+    if args.mom_top is not None:
+        mom_overrides["top_n"] = args.mom_top
+    if args.mom_lookback is not None:
+        mom_overrides["lookback"] = args.mom_lookback
+    if args.mom_every is not None:
+        mom_overrides["rebalance_every"] = args.mom_every
+    if args.mom_no_negative:
+        mom_overrides["allow_negative"] = False
+    if mom_overrides and args.strategy not in ("momentum", "all"):
+        log.warning("momentum overrides ignored for strategy %r", args.strategy)
+
     names = available() if args.strategy == "all" else [args.strategy]
     out_dir = pathlib.Path(args.out)
     rows = []
     for name in names:
         log.info("running strategy '%s' ...", name)
         result, metrics, split_metrics = run_strategy(
-            name, panel, bench, start, end, args.capital, trade_dates, args.split
+            name, panel, bench, start, end, args.capital, trade_dates, args.split,
+            mom_overrides if name == "momentum" else None
         )
         out_path = render_report(
             result, metrics, out_dir / f"backtest_{name}.html",
