@@ -1,3 +1,4 @@
+﻿from __future__ import annotations
 """Strategy registry and factory."""
 
 from strategies.base import Strategy

@@ -1,3 +1,4 @@
+﻿from __future__ import annotations
 """Multi-source daily failover and cross-validation tests (HTTP fully mocked).
 
 Every network touchpoint is stubbed through ``urllib.request.urlopen`` with

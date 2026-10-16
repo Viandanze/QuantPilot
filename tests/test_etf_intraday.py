@@ -1,3 +1,4 @@
+﻿from __future__ import annotations
 """T+0 ETF universe, intraday momentum strategy and small-account guard tests.
 
 All tests are offline: the HTTP layer of ``data.tx_http.fetch_minute`` is

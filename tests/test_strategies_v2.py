@@ -1,3 +1,4 @@
+﻿from __future__ import annotations
 """Tests for the v2 strategies: Bollinger mean reversion and ETF rotation."""
 import pytest
 
