@@ -97,7 +97,7 @@ signal_cli.py CLI: per-strategy daily signals
 backtest.py  CLI: run backtests, write reports
 grid_scan.py CLI: batch momentum (top_n x lookback x rebalance_every) sweeps
 make_charts.py CLI: render equity/drawdown PNGs from report data
-tests/       pytest suite (82 tests: costs, signals, engine constraints, risk rules,
+tests/       pytest suite (172 tests: costs, signals, engine constraints, risk rules,
              event core, V1/V2 equivalence, look-ahead defences, reconciliation,
              matching bindings + C++/Python equivalence)
 ```
@@ -371,7 +371,7 @@ median-of-5 measurements on one shared CPU core, not peak marketing figures.
 - **Standalone over integrated.** The backtest engine still fills at next
   open through its own execution handler - the v1/v2 equivalence tests stay
   untouched. Wiring the real order book into the daily loop is deliberately
-  left as an optional, separately-tested step; nothing in the 82-test suite
+  left as an optional, separately-tested step; nothing in the 172-test suite
   depends on the extension module being built.
 - **Cancel-resting STP** is the simplest deterministic self-trade policy:
   the resting (older) order dies, matching continues. Real venues offer
@@ -464,7 +464,7 @@ beat, and precisely why the frictions are not optional here.
 
 ## Testing
 
-`pytest` runs 82 tests, all offline: the cost model, strategy signal logic,
+`pytest` runs 172 tests, all offline (verified 2026-10-16: Windows py3.13 and Ubuntu 20.04 py3.8, both 172 passed): the cost model, strategy signal logic,
 engine constraints (next-open fills, T+1 locks, caps, stop loss, drawdown
 cooldown), the sample-data generator, the event vocabulary and queue, the
 event-driven core (data feed, portfolio, execution handler), V1/V2 equivalence
